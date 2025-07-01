@@ -1,43 +1,31 @@
-import crypto from 'crypto';
+import getRawBody from 'raw-body';
 
-/**
- * Tinkoff webhook entrypoint (Vercel Serverless Function)
- * Step 1 – skeleton: just log body and reply "OK" so the bank stops retrying.
- *
- * 👉 Next steps (separate commits)
- *  1. Parse JSON & verify Token (SHA‑256) – adds security.
- *  2. Forward the payload to INTERNAL_WEBHOOK_URL (your HTTP server)
- *  3. Handle retry logic / logging.
- *
- * Notes:
- *  • Bank expects HTTP 200 with body "OK" (exactly) within 10 s.
- *  • Keep responses FAST – do IO (DB, HTTP) after sending 200 whenever possible.
- */
+export const config = { api: { bodyParser: false } }; // получаем «сырой» JSON
 
 export default async function handler(req, res) {
-  // Only POST allowed
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method Not Allowed');
-  }
+  if (req.method !== 'POST') return res.status(405).end('method not allowed');
 
-  try {
-    // -- read raw request body ------------------------------------------------
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(chunk);
+  // читаем «сырое» тело (Tinkoff присылает application/json)
+  const raw = await getRawBody(req);
+  const data = JSON.parse(raw.toString('utf8'));
+
+  // обязательно подтверждаем приём: 200 OK
+  res.status(200).end('OK');
+
+  // проверяем, что платёж успешно подтверждён
+  if (data.Success && data.Status === 'CONFIRMED') {
+    const orderId = data.OrderId || '';
+
+    // вызываем PHP-скрипт, который перенесёт файл
+    try {
+      await fetch('http://tc-soft.ru/TC2019/Pay/move-order.php', {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({ orderId })
+      });
+      console.log(`move-order.php called for ${orderId}`);
+    } catch (e) {
+      console.error('move-order request failed:', e);
     }
-    const rawBody = Buffer.concat(chunks).toString('utf-8');
-
-    // For debugging: output to Vercel logs (visible in "Functions" tab)
-    console.log('[Tinkoff webhook] raw body =>', rawBody);
-
-    // TODO (Step 2): JSON.parse, Token verification, forward to your server.
-
-    // ⬇️ Always answer quickly so the bank stops retrying
-    return res.status(200).send('OK');
-  } catch (err) {
-    console.error('[Tinkoff webhook] error:', err);
-    // Even on error we send 200 so bank doesn’t spam retries; log locally.
-    return res.status(200).send('OK');
   }
 }
